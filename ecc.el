@@ -2,30 +2,61 @@
 
 (define-error 'compilation-commands-missing "No compilation commands json file in build root")
 
-(defun file-to-string (file)
-  "File to string function"
-  (with-temp-buffer
-    (insert-file-contents file)
-    (buffer-string)))
+(setq projects '())
 
-(defun make-compile-commands-json (pathname)
-  (json-parse-string (file-to-string pathname)))
-
-(defun make-project (source-root build-root)
+(cl-defun make-project (&key project-name
+                             project-short-name
+                             source-root
+                             build-root
+                             compile-commands-command)
   (let* ((json-path (concat build-root "/compile_commands.json"))
          (compile-commands (make-compile-commands-json json-path)))
-    (unless (file-exists-p json-path)
-      (signal 'compilation-commands-missing nil))
     `(
       (project-source . ,source-root)
       (project-build-root . ,build-root)
-      (project-compile-cmd-json . ,compile-commands)
+      (project-compile-command-json . ,compile-commands)
       (project-filename-to-compilation . ,(project-build-compilation-hash compile-commands))
       )
     ))
 
-(defun project-source-root (project-settings)
-  (cdr (assoc 'project-source project-settings)))
+
+(defun add-project (source-root build-root)
+  (add-to-list 'projects (make-project source-root build-root)))
+
+(defun project-find-file-hook ()
+  (let ((filename (buffer-file-name)))
+    (seq-filter (lambda (project)
+                  (if (string-prefix-p (project-source-root project) filename t)
+                      project
+                    nil))
+                projects)))
+
+(defun make-project (source-root build-root)
+  (let ((json-path (concat build-root "/compile_commands.json")))
+    (unless (file-exists-p json-path)
+      (signal 'compilation-commands-missing nil))
+    (let ((compile-commands (make-compile-commands-json json-path)))
+      `(
+        (project-source . ,source-root)
+        (project-build-root . ,build-root)
+        (project-compile-cmd-json . compile-commands)
+        (project-filename-to-compilation . ,(project-build-compilation-hash compile-commands))
+        )
+      )))
+
+(defmacro project-accessor (field-name body...)
+  `(defun ,(intern (concat "project-" field-name)) (&optional project)
+     (if (bound-and-true-p project)
+         (project-setting-lookup ,field-name project)
+       (project-setting-lookup ,field-name (project-for-current-buffer)))))
+
+(project-accessor "source-root" ())
+
+(defun project-setting-lookup (setting-name project-settings)
+  (cdr (assoc setting-name project-settings)))
+
+;; (defun project-source-root (project-settings)
+;;   (cdr (assoc 'project-source project-settings)))
 
 (defun project-build-root (project-settings)
   (cdr (assoc 'project-build-root project-settings)))
@@ -51,7 +82,12 @@
 (defun project-for-current-buffer ()
   ;; Eventually look through list of defined projects for the one
   ;; whose source root contains the current buffer.
-  llvm-project)
+  (let ((filename (buffer-file-name)))
+    (car (seq-filter (lambda (project)
+                       (if (string-prefix-p (project-source-root project) filename t)
+                           project
+                         nil))
+                     projects))))
 
 (defun compile-using-project-compilation-command ()
   (interactive)
@@ -59,3 +95,12 @@
          (compiler-command (project-get-compilation-command (buffer-file-name) project))
          (full-compile-command (concat "cd " (project-build-root project) " && " compiler-command)))
     (compile full-compile-command)))
+
+(defun file-to-string (file)
+  "File to string function"
+  (with-temp-buffer
+    (insert-file-contents-literally file)
+    (buffer-string)))
+
+(defun make-compile-commands-json (pathname)
+  (json-parse-string (file-to-string pathname)))
